@@ -1,0 +1,819 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from datetime import datetime, timedelta
+from typing import Dict, List
+import warnings
+warnings.filterwarnings('ignore')
+
+# Set matplotlib style
+sns.set_style("whitegrid")
+plt.rcParams['figure.facecolor'] = 'white'
+
+print("=" * 80)
+print("台股量化交易回測系統")
+print("=" * 80)
+
+# 導入類別
+class DataFetcher:
+    """股票資料獲取類別"""
+
+    def __init__(self, use_cache: bool = True):
+        self.use_cache = use_cache
+        self.cache = {}
+
+    def get_stock_data(self, stock_id: str, start_date: str, end_date: str,
+                      market: str = 'TW') -> pd.DataFrame:
+        ticker = self._format_ticker(stock_id, market)
+        cache_key = f"{ticker}_{start_date}_{end_date}"
+
+        if self.use_cache and cache_key in self.cache:
+            print(f"✓ 使用快取資料: {ticker}")
+            return self.cache[cache_key].copy()
+
+        try:
+            import yfinance as yf
+            print(f"正在下載 {ticker} 的資料...")
+
+            stock = yf.Ticker(ticker)
+            df = stock.history(start=start_date, end=end_date)
+
+            if df.empty:
+                print(f"{ticker} 無資料,使用模擬資料")
+                return self._generate_sample_data(stock_id, start_date, end_date)
+
+            df = df.reset_index()
+            df = df.rename(columns={
+                'Date': 'date', 'Open': 'open', 'High': 'high',
+                'Low': 'low', 'Close': 'close', 'Volume': 'volume'
+            })
+
+            df = df[['date', 'open', 'high', 'low', 'close', 'volume']]
+            df = df.dropna()
+            df['date'] = pd.to_datetime(df['date'])
+            df = df.sort_values('date').reset_index(drop=True)
+
+            print(f"✓ 成功載入 {len(df)} 筆資料")
+
+            if self.use_cache:
+                self.cache[cache_key] = df.copy()
+
+            return df
+
+        except ImportError:
+            print("請先安裝 yfinance: pip install yfinance")
+            return self._generate_sample_data(stock_id, start_date, end_date)
+        except Exception as e:
+            print(f"資料獲取失敗: {e}, 使用模擬資料")
+            return self._generate_sample_data(stock_id, start_date, end_date)
+
+    def _format_ticker(self, stock_id: str, market: str) -> str:
+        market = market.upper()
+        if market == 'TW':
+            if not stock_id.endswith('.TW') and not stock_id.endswith('.TWO'):
+                return f"{stock_id}.TW"
+            return stock_id
+        elif market == 'HK':
+            if not stock_id.endswith('.HK'):
+                stock_id = stock_id.zfill(4)
+                return f"{stock_id}.HK"
+            return stock_id
+        return stock_id
+
+    def _generate_sample_data(self, stock_id: str, start_date: str, end_date: str) -> pd.DataFrame:
+        dates = pd.date_range(start=start_date, end=end_date, freq='B')
+        n = len(dates)
+        seed = sum(ord(c) for c in stock_id)
+        np.random.seed(seed)
+
+        returns = np.random.randn(n) * 0.02 + 0.0003
+        prices = 100 * np.exp(np.cumsum(returns))
+
+        df = pd.DataFrame({
+            'date': dates,
+            'open': prices * (1 + np.random.randn(n) * 0.005),
+            'high': prices * (1 + np.abs(np.random.randn(n)) * 0.015),
+            'low': prices * (1 - np.abs(np.random.randn(n)) * 0.015),
+            'close': prices,
+            'volume': np.random.randint(1000, 10000, n) * 1000
+        })
+
+        df['high'] = df[['open', 'high', 'close']].max(axis=1)
+        df['low'] = df[['open', 'low', 'close']].min(axis=1)
+
+        return df
+
+
+class Indicators:
+    """技術指標工具"""
+
+    @staticmethod
+    def SMA(data: pd.Series, period: int) -> pd.Series:
+        return data.rolling(window=period).mean()
+
+    @staticmethod
+    def EMA(data: pd.Series, period: int) -> pd.Series:
+        return data.ewm(span=period, adjust=False).mean()
+
+    @staticmethod
+    def RSI(data: pd.Series, period: int = 14) -> pd.Series:
+        delta = data.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+        rs = gain / loss
+        return 100 - (100 / (1 + rs))
+
+
+class Strategy:
+    """策略基類"""
+
+    def __init__(self, name: str = "BaseStrategy"):
+        self.name = name
+        self.positions = []
+        self.params = {}
+
+    def init(self, data: pd.DataFrame):
+        self.data = data.copy()
+        self.calculate_indicators()
+
+    def calculate_indicators(self):
+        pass
+
+    def generate_signals(self) -> pd.Series:
+        raise NotImplementedError("子類必須實作 generate_signals 方法")
+
+
+class DualMovingAverageStrategy(Strategy):
+    """雙均線策略"""
+
+    def __init__(self, fast_period: int = 5, slow_period: int = 20):
+        super().__init__("雙均線策略")
+        self.fast_period = fast_period
+        self.slow_period = slow_period
+
+    def calculate_indicators(self):
+        self.data['MA_fast'] = Indicators.SMA(self.data['close'], self.fast_period)
+        self.data['MA_slow'] = Indicators.SMA(self.data['close'], self.slow_period)
+
+    def generate_signals(self) -> pd.Series:
+        signals = pd.Series(0, index=self.data.index)
+
+        golden_cross = (
+            (self.data['MA_fast'] > self.data['MA_slow']) &
+            (self.data['MA_fast'].shift(1) <= self.data['MA_slow'].shift(1))
+        )
+
+        death_cross = (
+            (self.data['MA_fast'] < self.data['MA_slow']) &
+            (self.data['MA_fast'].shift(1) >= self.data['MA_slow'].shift(1))
+        )
+
+        signals[golden_cross] = 1
+        signals[death_cross] = -1
+
+        return signals
+
+
+class Backtester:
+    """回測引擎"""
+
+    def __init__(self, initial_capital: float = 1000000, commission: float = 0.001425,
+                 tax: float = 0.003, slippage: float = 0.001):
+        self.initial_capital = initial_capital
+        self.commission = commission
+        self.tax = tax
+        self.slippage = slippage
+
+    def run(self, strategy: Strategy, data: pd.DataFrame) -> Dict:
+        strategy.init(data)
+        signals = strategy.generate_signals()
+
+        capital = self.initial_capital
+        position = 0
+        entry_price = 0
+
+        equity = [capital]
+        trades = []
+
+        for i in range(len(data)):
+            date = data.loc[i, 'date']
+            close = data.loc[i, 'close']
+            signal = signals.iloc[i] if i < len(signals) else 0
+
+            if signal == 1 and position == 0:
+                max_shares = int(capital / (close * (1 + self.commission + self.slippage)))
+                shares = (max_shares // 1000) * 1000
+
+                if shares > 0:
+                    cost = shares * close * (1 + self.commission + self.slippage)
+                    capital -= cost
+                    position = shares
+                    entry_price = close
+
+                    trades.append({
+                        'date': date, 'type': 'BUY', 'price': close,
+                        'shares': shares, 'cost': cost
+                    })
+
+            elif signal == -1 and position > 0:
+                proceeds = position * close * (1 - self.commission - self.tax - self.slippage)
+                capital += proceeds
+
+                pnl = proceeds - (position * entry_price * (1 + self.commission + self.slippage))
+
+                trades.append({
+                    'date': date, 'type': 'SELL', 'price': close,
+                    'shares': position, 'proceeds': proceeds,
+                    'pnl': pnl, 'return': pnl / (position * entry_price)
+                })
+
+                position = 0
+                entry_price = 0
+
+            total_equity = capital + (position * close if position > 0 else 0)
+            equity.append(total_equity)
+
+        if position > 0:
+            close_price = data.iloc[-1]['close']
+            proceeds = position * close_price * (1 - self.commission - self.tax - self.slippage)
+            capital += proceeds
+
+            trades.append({
+                'date': data.iloc[-1]['date'], 'type': 'SELL (CLOSE)',
+                'price': close_price, 'shares': position, 'proceeds': proceeds,
+                'pnl': proceeds - (position * entry_price * (1 + self.commission + self.slippage))
+            })
+
+        equity_series = pd.Series(equity)
+        returns = equity_series.pct_change().dropna()
+
+        results = {
+            'total_return': (equity[-1] - self.initial_capital) / self.initial_capital,
+            'total_trades': len([t for t in trades if t['type'] == 'BUY']),
+            'win_rate': self._calculate_win_rate(trades),
+            'sharpe_ratio': self._calculate_sharpe(returns),
+            'max_drawdown': self._calculate_max_drawdown(equity_series),
+            'profit_factor': self._calculate_profit_factor(trades),
+            'equity_curve': equity,
+            'trades': trades,
+            'final_capital': equity[-1],
+            'data': data  # 保存原始資料供圖表使用
+        }
+
+        return results
+
+    def _calculate_win_rate(self, trades: List[Dict]) -> float:
+        sell_trades = [t for t in trades if 'pnl' in t]
+        if not sell_trades:
+            return 0
+        winning = sum(1 for t in sell_trades if t['pnl'] > 0)
+        return winning / len(sell_trades)
+
+    def _calculate_sharpe(self, returns: pd.Series, rf: float = 0.01) -> float:
+        if returns.std() == 0:
+            return 0
+        excess_returns = returns - rf / 252
+        return np.sqrt(252) * excess_returns.mean() / returns.std()
+
+    def _calculate_max_drawdown(self, equity: pd.Series) -> float:
+        cummax = equity.expanding().max()
+        drawdown = (equity - cummax) / cummax
+        return drawdown.min()
+
+    def _calculate_profit_factor(self, trades: List[Dict]) -> float:
+        sell_trades = [t for t in trades if 'pnl' in t]
+        if not sell_trades:
+            return 0
+
+        gross_profit = sum(t['pnl'] for t in sell_trades if t['pnl'] > 0)
+        gross_loss = abs(sum(t['pnl'] for t in sell_trades if t['pnl'] < 0))
+
+        return gross_profit / gross_loss if gross_loss > 0 else float('inf')
+
+
+# ============================================================================
+# 步驟 2: 完整視覺化工具
+# ============================================================================
+
+class ComprehensiveVisualizer:
+    """綜合視覺化工具"""
+
+    def __init__(self):
+        self.colors = {
+            'primary': '#2E86AB', 'secondary': '#A23B72',
+            'success': '#06A77D', 'danger': '#D62828',
+            'warning': '#F77F00', 'info': '#4ECDC4'
+        }
+
+    def plot_all_charts(self, results: Dict, stock_name: str = ""):
+        """生成所有分析圖表"""
+
+        print(f"\n📊 正在生成視覺化圖表...")
+
+        # 1. 績效總覽
+        self.plot_performance_summary(results, stock_name)
+
+        # 2. 價格與信號圖
+        self.plot_price_and_signals(results, stock_name)
+
+        # 3. 權益曲線與回撤
+        self.plot_equity_and_drawdown(results, stock_name)
+
+        # 4. 交易分析
+        self.plot_trade_analysis(results, stock_name)
+
+        # 5. 報酬率分析
+        self.plot_returns_analysis(results, stock_name)
+
+        print("✓ 所有圖表生成完成!")
+
+    def plot_performance_summary(self, results: Dict, stock_name: str):
+        """Performance Overview Dashboard"""
+        fig = plt.figure(figsize=(16, 10))
+        gs = fig.add_gridspec(3, 3, hspace=0.3, wspace=0.3)
+
+        # Title
+        fig.suptitle(f'{stock_name} Strategy Performance Overview', fontsize=20, fontweight='bold', y=0.98)
+
+        # 1. Key Metrics Cards
+        ax1 = fig.add_subplot(gs[0, :])
+        ax1.axis('off')
+
+        metrics = [
+            ('Total Return', f"{results['total_return']*100:.2f}%", self.colors['primary']),
+            ('Sharpe Ratio', f"{results['sharpe_ratio']:.2f}", self.colors['success']),
+            ('Max Drawdown', f"{results['max_drawdown']*100:.2f}%", self.colors['danger']),
+            ('Win Rate', f"{results['win_rate']*100:.2f}%", self.colors['warning']),
+            ('Profit Factor', f"{results['profit_factor']:.2f}", self.colors['info']),
+            ('Total Trades', f"{results['total_trades']}", self.colors['secondary'])
+        ]
+
+        for i, (label, value, color) in enumerate(metrics):
+            x = 0.05 + i * 0.15
+            # Background box
+            rect = plt.Rectangle((x, 0.3), 0.13, 0.5,
+                                facecolor=color, alpha=0.2,
+                                transform=ax1.transAxes)
+            ax1.add_patch(rect)
+            # Value
+            ax1.text(x + 0.065, 0.6, value,
+                    fontsize=18, fontweight='bold',
+                    ha='center', va='center',
+                    transform=ax1.transAxes, color=color)
+            # Label
+            ax1.text(x + 0.065, 0.4, label,
+                    fontsize=11, ha='center', va='center',
+                    transform=ax1.transAxes)
+
+        # 2. Equity Curve
+        ax2 = fig.add_subplot(gs[1, :2])
+        equity = results['equity_curve']
+        ax2.plot(equity, linewidth=2, color=self.colors['primary'])
+        ax2.fill_between(range(len(equity)), equity, alpha=0.3,
+                        color=self.colors['primary'])
+        ax2.set_title('Equity Curve', fontsize=14, fontweight='bold', pad=10)
+        ax2.set_ylabel('Equity (USD)', fontsize=11)
+        ax2.set_xlabel('Trading Days', fontsize=11)
+        ax2.grid(True, alpha=0.3)
+        ax2.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'{x/1e6:.1f}M'))
+
+        # 3. Drawdown Chart
+        ax3 = fig.add_subplot(gs[1, 2])
+        equity_series = pd.Series(equity)
+        cummax = equity_series.expanding().max()
+        drawdown = (equity_series - cummax) / cummax * 100
+        ax3.fill_between(range(len(drawdown)), drawdown, 0,
+                        color=self.colors['danger'], alpha=0.5)
+        ax3.plot(drawdown, color=self.colors['danger'], linewidth=1.5)
+        ax3.set_title('Drawdown Curve', fontsize=14, fontweight='bold', pad=10)
+        ax3.set_ylabel('Drawdown (%)', fontsize=11)
+        ax3.set_xlabel('Trading Days', fontsize=11)
+        ax3.grid(True, alpha=0.3)
+
+        # 4. Win/Loss Ratio
+        ax4 = fig.add_subplot(gs[2, 0])
+        trades = [t for t in results['trades'] if 'pnl' in t]
+        wins = sum(1 for t in trades if t['pnl'] > 0)
+        losses = len(trades) - wins
+        ax4.pie([wins, losses], labels=['Win', 'Loss'],
+               autopct='%1.1f%%', startangle=90,
+               colors=[self.colors['success'], self.colors['danger']],
+               textprops={'fontsize': 11})
+        ax4.set_title('Win/Loss Ratio', fontsize=14, fontweight='bold', pad=10)
+
+        # 5. Monthly Returns
+        ax5 = fig.add_subplot(gs[2, 1:])
+        returns = pd.Series(equity).pct_change().dropna()
+        monthly_returns = []
+        for i in range(0, len(returns), 21):  # ~21 trading days per month
+            period_return = returns.iloc[i:i+21].sum() * 100
+            monthly_returns.append(period_return)
+
+        colors_bars = [self.colors['success'] if r > 0 else self.colors['danger']
+                      for r in monthly_returns]
+        ax5.bar(range(len(monthly_returns)), monthly_returns, color=colors_bars, alpha=0.7)
+        ax5.axhline(0, color='black', linestyle='-', linewidth=0.8)
+        ax5.set_title('Monthly Returns', fontsize=14, fontweight='bold', pad=10)
+        ax5.set_ylabel('Return (%)', fontsize=11)
+        ax5.set_xlabel('Month', fontsize=11)
+        ax5.grid(True, alpha=0.3, axis='y')
+
+        plt.tight_layout()
+        plt.show()
+
+    def plot_price_and_signals(self, results: Dict, stock_name: str):
+        """Price Chart with Trading Signals"""
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(16, 10),
+                                       height_ratios=[3, 1], sharex=True)
+
+        data = results['data']
+        trades = results['trades']
+
+        # Price line
+        ax1.plot(data.index, data['close'], linewidth=1.5,
+                color=self.colors['primary'], label='Close Price', alpha=0.8)
+
+        # Buy/Sell markers
+        buy_trades = [t for t in trades if t['type'] == 'BUY']
+        sell_trades = [t for t in trades if t['type'].startswith('SELL')]
+
+        if buy_trades:
+            buy_dates = [t['date'] for t in buy_trades]
+            buy_prices = [t['price'] for t in buy_trades]
+            buy_indices = [data[data['date'] == d].index[0] if len(data[data['date'] == d]) > 0
+                          else 0 for d in buy_dates]
+            ax1.scatter(buy_indices, buy_prices, color=self.colors['success'],
+                       s=150, marker='^', zorder=5, label='Buy', edgecolors='black')
+
+        if sell_trades:
+            sell_dates = [t['date'] for t in sell_trades]
+            sell_prices = [t['price'] for t in sell_trades]
+            sell_indices = [data[data['date'] == d].index[0] if len(data[data['date'] == d]) > 0
+                           else 0 for d in sell_dates]
+            ax1.scatter(sell_indices, sell_prices, color=self.colors['danger'],
+                       s=150, marker='v', zorder=5, label='Sell', edgecolors='black')
+
+        ax1.set_title(f'{stock_name} Price Chart with Trading Signals',
+                     fontsize=16, fontweight='bold', pad=15)
+        ax1.set_ylabel('Price (USD)', fontsize=12)
+        ax1.legend(loc='upper left', fontsize=11)
+        ax1.grid(True, alpha=0.3)
+
+        # Volume
+        ax2.bar(data.index, data['volume'], color=self.colors['info'], alpha=0.6)
+        ax2.set_ylabel('Volume', fontsize=12)
+        ax2.set_xlabel('Date', fontsize=12)
+        ax2.grid(True, alpha=0.3, axis='y')
+        ax2.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'{x/1e6:.1f}M'))
+
+        plt.tight_layout()
+        plt.show()
+
+    def plot_equity_and_drawdown(self, results: Dict, stock_name: str):
+        """Equity Curve and Drawdown Analysis"""
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(16, 8),
+                                       height_ratios=[2, 1], sharex=True)
+
+        equity = results['equity_curve']
+        equity_series = pd.Series(equity)
+
+        # Equity curve
+        ax1.plot(equity, linewidth=2, color=self.colors['primary'], label='Equity Curve')
+        ax1.fill_between(range(len(equity)), equity, alpha=0.3,
+                        color=self.colors['primary'])
+
+        # Mark highest and lowest points
+        max_idx = np.argmax(equity)
+        min_idx = np.argmin(equity)
+        ax1.scatter(max_idx, equity[max_idx], color=self.colors['success'],
+                   s=200, marker='*', zorder=5, label='Highest')
+        ax1.scatter(min_idx, equity[min_idx], color=self.colors['danger'],
+                   s=200, marker='*', zorder=5, label='Lowest')
+
+        ax1.set_title(f'{stock_name} Equity Curve Analysis',
+                     fontsize=16, fontweight='bold', pad=15)
+        ax1.set_ylabel('Equity (USD)', fontsize=12)
+        ax1.legend(loc='upper left', fontsize=11)
+        ax1.grid(True, alpha=0.3)
+        ax1.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'{x/1e6:.2f}M'))
+
+        # Drawdown curve
+        cummax = equity_series.expanding().max()
+        drawdown = (equity_series - cummax) / cummax * 100
+
+        ax2.fill_between(range(len(drawdown)), drawdown, 0,
+                        color=self.colors['danger'], alpha=0.4)
+        ax2.plot(drawdown, color=self.colors['danger'], linewidth=2)
+
+        # Mark maximum drawdown
+        max_dd_idx = np.argmin(drawdown)
+        ax2.scatter(max_dd_idx, drawdown.iloc[max_dd_idx],
+                   color='darkred', s=150, zorder=5)
+        ax2.annotate(f'Max DD: {drawdown.iloc[max_dd_idx]:.2f}%',
+                    xy=(max_dd_idx, drawdown.iloc[max_dd_idx]),
+                    xytext=(30, -40), textcoords='offset points',
+                    fontsize=11, fontweight='bold',
+                    bbox=dict(boxstyle='round,pad=0.8', fc='yellow', alpha=0.8),
+                    arrowprops=dict(arrowstyle='->', lw=2, color='darkred'))
+
+        ax2.set_ylabel('Drawdown (%)', fontsize=12)
+        ax2.set_xlabel('Trading Days', fontsize=12)
+        ax2.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        plt.show()
+
+    def plot_trade_analysis(self, results: Dict, stock_name: str):
+        """Detailed Trade Analysis"""
+        fig, axes = plt.subplots(2, 2, figsize=(16, 10))
+        fig.suptitle(f'{stock_name} Trade Analysis', fontsize=18, fontweight='bold', y=0.995)
+
+        trades = results['trades']
+        sell_trades = [t for t in trades if 'pnl' in t]
+
+        if not sell_trades:
+            print("No trade records, skipping trade analysis chart")
+            plt.close()
+            return
+
+        # Cumulative P&L
+        cumulative_pnl = np.cumsum([t['pnl'] for t in sell_trades])
+        axes[0, 0].plot(cumulative_pnl, linewidth=2.5, color=self.colors['primary'])
+        axes[0, 0].fill_between(range(len(cumulative_pnl)), cumulative_pnl,
+                               alpha=0.3, color=self.colors['primary'])
+        axes[0, 0].axhline(0, color='black', linestyle='--', linewidth=1)
+        axes[0, 0].set_title('Cumulative P&L', fontsize=14, fontweight='bold', pad=10)
+        axes[0, 0].set_xlabel('Trade Number', fontsize=11)
+        axes[0, 0].set_ylabel('Cumulative P&L (USD)', fontsize=11)
+        axes[0, 0].grid(True, alpha=0.3)
+
+        # Per-Trade P&L Scatter
+        pnl_values = [t['pnl'] for t in sell_trades]
+        colors = [self.colors['success'] if p > 0 else self.colors['danger']
+                 for p in pnl_values]
+        axes[0, 1].scatter(range(len(pnl_values)), pnl_values,
+                          c=colors, s=80, alpha=0.7, edgecolors='black')
+        axes[0, 1].axhline(0, color='black', linestyle='-', linewidth=1)
+        axes[0, 1].set_title('Per-Trade P&L', fontsize=14, fontweight='bold', pad=10)
+        axes[0, 1].set_xlabel('Trade Number', fontsize=11)
+        axes[0, 1].set_ylabel('P&L (USD)', fontsize=11)
+        axes[0, 1].grid(True, alpha=0.3)
+
+        # P&L Distribution Histogram
+        axes[1, 0].hist(pnl_values, bins=20, color=self.colors['info'],
+                       alpha=0.7, edgecolor='black')
+        axes[1, 0].axvline(np.mean(pnl_values), color=self.colors['danger'],
+                          linestyle='--', linewidth=2.5,
+                          label=f'Mean: {np.mean(pnl_values):,.0f}')
+        axes[1, 0].axvline(0, color='black', linestyle='-', linewidth=1)
+        axes[1, 0].set_title('P&L Distribution', fontsize=14, fontweight='bold', pad=10)
+        axes[1, 0].set_xlabel('P&L (USD)', fontsize=11)
+        axes[1, 0].set_ylabel('Frequency', fontsize=11)
+        axes[1, 0].legend(fontsize=10)
+        axes[1, 0].grid(True, alpha=0.3)
+
+        # Return Distribution
+        returns = [t['return'] * 100 for t in sell_trades if 'return' in t]
+        if not returns:
+            print("無有效交易報酬率資料可繪製")
+            plt.close(fig) # Close the figure if no data to plot
+            return
+        axes[1, 1].hist(returns, bins=20, color=self.colors['warning'],
+                       alpha=0.7, edgecolor='black')
+        axes[1, 1].axvline(np.mean(returns), color=self.colors['danger'],
+                          linestyle='--', linewidth=2.5,
+                          label=f'Mean: {np.mean(returns):.2f}%')
+        axes[1, 1].axvline(0, color='black', linestyle='-', linewidth=1)
+        axes[1, 1].set_title('Return Distribution', fontsize=14, fontweight='bold', pad=10)
+        axes[1, 1].set_xlabel('Return (%)', fontsize=11)
+        axes[1, 1].set_ylabel('Frequency', fontsize=11)
+        axes[1, 1].legend(fontsize=10)
+        axes[1, 1].grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        plt.show()
+
+    def plot_returns_analysis(self, results: Dict, stock_name: str):
+        """Deep Returns Analysis"""
+        fig, axes = plt.subplots(2, 2, figsize=(16, 10))
+        fig.suptitle(f'{stock_name} Returns Analysis', fontsize=18, fontweight='bold', y=0.995)
+
+        equity_series = pd.Series(results['equity_curve'])
+        returns = equity_series.pct_change().dropna()
+
+        # Daily Returns Time Series
+        axes[0, 0].plot(returns * 100, linewidth=1, color=self.colors['primary'], alpha=0.7)
+        axes[0, 0].axhline(0, color='black', linestyle='-', linewidth=1)
+        axes[0, 0].fill_between(range(len(returns)), returns * 100, 0,
+                               where=(returns > 0), color=self.colors['success'], alpha=0.3)
+        axes[0, 0].fill_between(range(len(returns)), returns * 100, 0,
+                               where=(returns < 0), color=self.colors['danger'], alpha=0.3)
+        axes[0, 0].set_title('Daily Returns', fontsize=14, fontweight='bold', pad=10)
+        axes[0, 0].set_xlabel('Trading Days', fontsize=11)
+        axes[0, 0].set_ylabel('Return (%)', fontsize=11)
+        axes[0, 0].grid(True, alpha=0.3)
+
+        # Returns Distribution vs Normal Distribution
+        axes[0, 1].hist(returns * 100, bins=40, density=True,
+                       color=self.colors['info'], alpha=0.6, edgecolor='black',
+                       label='Actual Distribution')
+
+        # Overlay normal distribution
+        mu = returns.mean() * 100
+        sigma = returns.std() * 100
+        x = np.linspace(returns.min() * 100, returns.max() * 100, 100)
+        axes[0, 1].plot(x, 1/(sigma * np.sqrt(2 * np.pi)) * np.exp(-(x - mu)**2 / (2 * sigma**2)),
+                       linewidth=2, color=self.colors['danger'], label='Normal Distribution')
+        axes[0, 1].set_title('Returns Distribution vs Normal', fontsize=14, fontweight='bold', pad=10)
+        axes[0, 1].set_xlabel('Return (%)', fontsize=11)
+        axes[0, 1].set_ylabel('Density', fontsize=11)
+        axes[0, 1].legend(fontsize=10)
+        axes[0, 1].grid(True, alpha=0.3)
+
+        # Cumulative Returns
+        cumulative_returns = (1 + returns).cumprod() - 1
+        axes[1, 0].plot(cumulative_returns * 100, linewidth=2,
+                       color=self.colors['primary'])
+        axes[1, 0].fill_between(range(len(cumulative_returns)),
+                               cumulative_returns * 100, alpha=0.3,
+                               color=self.colors['primary'])
+        axes[1, 0].set_title('Cumulative Returns', fontsize=14, fontweight='bold', pad=10)
+        axes[1, 0].set_xlabel('Trading Days', fontsize=11)
+        axes[1, 0].set_ylabel('Cumulative Return (%)', fontsize=11)
+        axes[1, 0].grid(True, alpha=0.3)
+
+        # Rolling Sharpe Ratio (60-day window)
+        window = 60
+        rolling_sharpe = []
+        for i in range(window, len(returns)):
+            window_returns = returns.iloc[i-window:i]
+            sharpe = np.sqrt(252) * window_returns.mean() / window_returns.std()
+            rolling_sharpe.append(sharpe)
+
+        axes[1, 1].plot(range(window, len(returns)), rolling_sharpe,
+                       linewidth=2, color=self.colors['success'])
+        axes[1, 1].axhline(1.0, color=self.colors['warning'], linestyle='--',
+                          linewidth=1.5, label='Sharpe=1.0', alpha=0.7)
+        axes[1, 1].axhline(0, color='black', linestyle='-', linewidth=1)
+        axes[1, 1].set_title('Rolling Sharpe Ratio (60-day)', fontsize=14, fontweight='bold', pad=10)
+        axes[1, 1].set_xlabel('Trading Days', fontsize=11)
+        axes[1, 1].set_ylabel('Sharpe Ratio', fontsize=11)
+        axes[1, 1].legend(fontsize=10)
+        axes[1, 1].grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        plt.show()
+
+    def print_detailed_report(self, results: Dict, stock_name: str = ""):
+        """Print Detailed Performance Report"""
+        trades = [t for t in results['trades'] if 'pnl' in t]
+
+        if not trades:
+            print("\nNo trade records")
+            return
+
+        win_trades = [t for t in trades if t['pnl'] > 0]
+        loss_trades = [t for t in trades if t['pnl'] < 0]
+
+        avg_win = np.mean([t['pnl'] for t in win_trades]) if win_trades else 0
+        avg_loss = np.mean([t['pnl'] for t in loss_trades]) if loss_trades else 0
+
+        report = f"""
+╔══════════════════════════════════════════════════════════════════════╗
+║                {stock_name} Strategy Performance Report                 ║
+╠══════════════════════════════════════════════════════════════════════╣
+║                                                                      ║
+║  PERFORMANCE METRICS                                                 ║
+║  ──────────────────────────────────────────────────────────────────  ║
+║    Total Return         {results['total_return']*100:>10.2f} %                          ║
+║    Annualized Return    {results['total_return']*252/len(results['equity_curve'])*100:>10.2f} %                          ║
+║    Sharpe Ratio         {results['sharpe_ratio']:>10.2f}                               ║
+║    Max Drawdown         {results['max_drawdown']*100:>10.2f} %                          ║
+║    Profit Factor        {results['profit_factor']:>10.2f}                               ║
+║                                                                      ║
+║  CAPITAL STATUS                                                      ║
+║  ──────────────────────────────────────────────────────────────────  ║
+║    Initial Capital      {results['equity_curve'][0]:>15,.0f} USD                     ║
+║    Final Capital        {results['final_capital']:>15,.0f} USD                     ║
+║    Total P&L            {results['final_capital'] - results['equity_curve'][0]:>15,.0f} USD                     ║
+║                                                                      ║
+║  TRADE STATISTICS                                                    ║
+║  ──────────────────────────────────────────────────────────────────  ║
+║    Total Trades         {results['total_trades']:>10d}                               ║
+║    Winning Trades       {len(win_trades):>10d}                               ║
+║    Losing Trades        {len(loss_trades):>10d}                               ║
+║    Win Rate             {results['win_rate']*100:>10.2f} %                          ║
+║                                                                      ║
+║  P&L ANALYSIS                                                        ║
+║  ──────────────────────────────────────────────────────────────────  ║
+║    Total Profit         {sum(t['pnl'] for t in win_trades):>15,.0f} USD                     ║
+║    Total Loss           {sum(t['pnl'] for t in loss_trades):>15,.0f} USD                     ║
+║    Avg Win              {avg_win:>15,.0f} USD                     ║
+║    Avg Loss             {avg_loss:>15,.0f} USD                     ║
+║    Win/Loss Ratio       {abs(avg_win/avg_loss) if avg_loss != 0 else 0:>10.2f}                               ║
+║                                                                      ║
+║  RISK METRICS                                                        ║
+║  ──────────────────────────────────────────────────────────────────  ║
+║    Largest Win          {max(t['pnl'] for t in trades):>15,.0f} USD                     ║
+║    Largest Loss         {min(t['pnl'] for t in trades):>15,.0f} USD                     ║
+║    Avg Holding Days     Calculating...                              ║
+║                                                                      ║
+╚══════════════════════════════════════════════════════════════════════╝
+        """
+
+        print(report)
+
+
+# Main
+def run_complete_backtest(stock_id: str = '2330',
+                          start_date: str = '2023-01-01',
+                          end_date: str = '2024-11-01',
+                          initial_capital: float = 1000000):
+    """
+    Run Complete Backtest
+
+    Parameters:
+    -----------
+    stock_id: Stock code (e.g., '2330' for Taiwan stock)
+    start_date: Start date
+    end_date: End date
+    initial_capital: Initial capital
+    """
+
+    print(f"\n[START] Backtest Process")
+    print(f"   Stock: {stock_id}")
+    print(f"   Period: {start_date} ~ {end_date}")
+    print(f"   Capital: ${initial_capital:,.0f}\n")
+
+    # 1. Fetch Data
+    print("[1/4] Fetching Stock Data")
+    fetcher = DataFetcher()
+    data = fetcher.get_stock_data(stock_id, start_date, end_date, market='TW')
+
+    if data.empty:
+        print("ERROR: Failed to fetch data, terminating")
+        return
+
+    # 2. Initialize Strategy
+    print("\n[2/4] Initializing Strategy")
+    strategy = DualMovingAverageStrategy(fast_period=5, slow_period=20)
+    print(f"   Strategy: {strategy.name}")
+    print(f"   Fast MA: {strategy.fast_period} days")
+    print(f"   Slow MA: {strategy.slow_period} days")
+
+    # 3. Run Backtest
+    print("\n[3/4] Running Backtest")
+    backtester = Backtester(
+        initial_capital=initial_capital,
+        commission=0.001425,  # 0.1425%
+        tax=0.003,            # 0.3%
+        slippage=0.001        # 0.1%
+    )
+
+    results = backtester.run(strategy, data)
+    print("   Backtest Complete!")
+
+    # 4. Generate Reports and Charts
+    print("\n[4/4] Generating Analysis Reports")
+    visualizer = ComprehensiveVisualizer()
+
+    # Print text report
+    stock_name = f"Stock_{stock_id}"
+    visualizer.print_detailed_report(results, stock_name)
+
+    # Generate all charts
+    visualizer.plot_all_charts(results, stock_name)
+
+    print("\n[COMPLETE] Analysis Finished!")
+    print("=" * 80)
+
+    return results
+
+# 執行
+
+if __name__ == "__main__":
+    print("\n" + "=" * 80)
+    print("Starting Backtest...")
+    print("=" * 80)
+
+    # Run backtest - modify these parameters as needed
+    results = run_complete_backtest(
+        stock_id='2330',           # TSMC
+        start_date='2023-01-01',   # Start date
+        end_date='2024-11-01',     # End date
+        initial_capital=1000000    # $1M initial capital
+    )
+
+    # Test other stocks (uncomment to run)
+    # results = run_complete_backtest(stock_id='2454', start_date='2023-01-01', end_date='2024-11-01')  # MediaTek
+    # results = run_complete_backtest(stock_id='2317', start_date='2023-01-01', end_date='2024-11-01')  # Hon Hai
+    # results = run_complete_backtest(stock_id='2881', start_date='2023-01-01', end_date='2024-11-01')  # Fubon Financial
+
+    print("\n[TIPS]:")
+    print("1. All charts will display automatically")
+    print("2. Modify stock_id to test different stocks")
+    print("3. Adjust date range for different periods")
+    print("4. Change initial_capital amount")
+    print("\nRecommended stocks to test: 2330(TSMC), 2454(MediaTek), 2317(Hon Hai), 2881(Fubon)")
+    print("=" * 80)
