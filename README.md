@@ -1,1 +1,9 @@
-本專案利用 Python 的資料科學套件，結合 yfinance 抓取股票與財務資料，搭配 pandas、numpy 進行資料處理，並使用 matplotlib 與 seaborn 繪製圖表，協助進行策略層面的分析與決策支援。
+## 專案簡介
+本專案以 Python 為主，結合 yfinance 取得股票與財務資料，透過 pandas、matplotlib、seaborn 等套件進行策略層面的財務分析與圖表視覺化，適合 전략管理、財務管理或投資分析相關課程使用。
+
+## 快速開始（VS Code 專用流程）
+
+### 1. Clone 專案
+```bash
+git clone https://github.com/yuxiutan/Strategic_analysis_fju.git
+cd Strategic_analysis_fju
