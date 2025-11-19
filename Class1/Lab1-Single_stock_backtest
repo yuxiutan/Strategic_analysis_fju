@@ -309,7 +309,7 @@ class ComprehensiveVisualizer:
     def plot_all_charts(self, results: Dict, stock_name: str = ""):
         """生成所有分析圖表"""
 
-        print(f"\n📊 正在生成視覺化圖表...")
+        print(f"\n正在生成視覺化圖表...")
 
         # 1. 績效總覽
         self.plot_performance_summary(results, stock_name)
@@ -725,7 +725,7 @@ class ComprehensiveVisualizer:
         print(report)
 
 
-# Main
+# Main Program
 def run_complete_backtest(stock_id: str = '2330',
                           start_date: str = '2023-01-01',
                           end_date: str = '2024-11-01',
