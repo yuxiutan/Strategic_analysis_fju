@@ -1,0 +1,485 @@
+"""
+Enhanced Multi-Stock Backtesting and Comparison System
+A complete quantitative trading framework with data fetching, strategy engine,
+backtesting, and professional-grade performance analysis & visualization.
+All text in English | Perfect chart rendering | 9 advanced analytical charts
+"""
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from typing import Dict, List, Any
+from datetime import datetime
+import yfinance as yf
+from abc import ABC, abstractmethod
+
+# ============================================================================
+# Global Settings - Force English fonts and clean style
+# ============================================================================
+plt.style.use('seaborn-v0_8-darkgrid')
+sns.set_palette("husl")
+plt.rcParams['font.family'] = 'DejaVu Sans'   # Built-in English font, no Chinese box issue
+plt.rcParams['axes.unicode_minus'] = False    # Correctly display negative signs
+plt.rcParams.update({'font.size': 11})
+
+# ============================================================================
+# 1. Data Fetcher
+# ============================================================================
+class DataFetcher:
+    def get_stock_data(self, stock_id: str, start_date: str, end_date: str, market: str = 'TW') -> pd.DataFrame:
+        try:
+            ticker = f"{stock_id}.TW" if market == 'TW' else stock_id
+            print(f"Fetching data for {ticker}...")
+            df = yf.download(ticker, start=start_date, end=end_date, progress=False)
+
+            if df.empty:
+                print(f"Warning: No data for {stock_id}")
+                return pd.DataFrame()
+
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+            df = df.reset_index()
+            df.columns = [col.lower().replace(' ', '_') for col in df.columns]
+
+            # Standardize column names
+            column_mapping = {
+                'date': 'date', 'open': 'open', 'high': 'high', 'low': 'low',
+                'close': 'close', 'adj_close': 'adj_close', 'volume': 'volume'
+            }
+            df = df.rename(columns={col: new_name for col, new_name in column_mapping.items() if col in df.columns})
+
+            required = ['date', 'open', 'high', 'low', 'close', 'volume']
+            if not all(col in df.columns for col in required):
+                print(f"Warning: Missing required columns for {stock_id}")
+                return pd.DataFrame()
+
+            print(f"Success: Fetched {len(df)} records for {stock_id}")
+            return df[['date', 'open', 'high', 'low', 'close', 'volume', 'adj_close'] if 'adj_close' in df.columns else df.columns]
+
+        except Exception as e:
+            print(f"Error: Failed to fetch {stock_id}: {e}")
+            return pd.DataFrame()
+
+
+# ============================================================================
+# 2. Strategy Base Class
+# ============================================================================
+class Strategy(ABC):
+    def __init__(self):
+        self.name = "BaseStrategy"
+
+    @abstractmethod
+    def generate_signals(self, data: pd.DataFrame) -> pd.DataFrame:
+        pass
+
+
+# ============================================================================
+# 3. Moving Average Crossover Strategy
+# ============================================================================
+class MovingAverageCrossStrategy(Strategy):
+    def __init__(self, short_window: int = 5, long_window: int = 20):
+        super().__init__()
+        self.short_window = short_window
+        self.long_window = long_window
+        self.name = f"MA_Cross_{short_window}_{long_window}"
+
+    def generate_signals(self, data: pd.DataFrame) -> pd.DataFrame:
+        df = data.copy()
+        df['ma_short'] = df['close'].rolling(window=self.short_window).mean()
+        df['ma_long'] = df['close'].rolling(window=self.long_window).mean()
+        df['signal'] = 0
+        df.loc[df['ma_short'] > df['ma_long'], 'signal'] = 1   # Buy
+        df.loc[df['ma_short'] < df['ma_long'], 'signal'] = -1  # Sell
+        return df
+
+
+# ============================================================================
+# 4. RSI Strategy
+# ============================================================================
+class RSIStrategy(Strategy):
+    def __init__(self, period: int = 14, oversold: int = 30, overbought: int = 70):
+        super().__init__()
+        self.period = period
+        self.oversold = oversold
+        self.overbought = overbought
+        self.name = f"RSI_{period}_{oversold}_{overbought}"
+
+    def _rsi(self, prices: pd.Series, period: int) -> pd.Series:
+        delta = prices.diff()
+        gain = delta.where(delta > 0, 0).rolling(window=period).mean()
+        loss = -delta.where(delta < 0, 0).rolling(window=period).mean()
+        rs = gain / loss
+        return 100 - (100 / (1 + rs))
+
+    def generate_signals(self, data: pd.DataFrame) -> pd.DataFrame:
+        df = data.copy()
+        df['rsi'] = self._rsi(df['close'], self.period)
+        df['signal'] = 0
+        df.loc[df['rsi'] < self.oversold, 'signal'] = 1
+        df.loc[df['rsi'] > self.overbought, 'signal'] = -1
+        return df
+
+
+# ============================================================================
+# 5. Backtesting Engine
+# ============================================================================
+class Backtester:
+    def __init__(self, initial_capital: float = 1_000_000, commission: float = 0.001425):
+        self.initial_capital = initial_capital
+        self.commission = commission
+
+    def run(self, strategy: Strategy, data: pd.DataFrame) -> Dict[str, Any]:
+        df = strategy.generate_signals(data)
+        capital = self.initial_capital
+        position = 0
+        equity_curve = [capital]
+        trades = []
+        daily_returns = []
+
+        entry_price = entry_date = None
+
+        for i in range(1, len(df)):
+            price = df.iloc[i]['close']
+            signal = df.iloc[i]['signal']
+            prev_signal = df.iloc[i-1]['signal']
+            date = df.iloc[i]['date']
+
+            # Enter long
+            if signal == 1 and prev_signal != 1 and position == 0:
+                position = int(capital / price)
+                if position > 0:
+                    cost = position * price * (1 + self.commission)
+                    capital -= cost
+                    entry_price = price
+                    entry_date = date
+                    trades.append({'type': 'BUY', 'date': date, 'price': price, 'shares': position})
+
+            # Exit long
+            elif signal == -1 and position > 0:
+                revenue = position * price * (1 - self.commission)
+                capital += revenue
+                pnl = (price - entry_price) * position - (entry_price * position * self.commission * 2)
+                pnl_pct = (price - entry_price) / entry_price
+
+                trades.append({
+                    'type': 'SELL', 'date': date, 'price': price, 'shares': position,
+                    'pnl': pnl, 'pnl_pct': pnl_pct, 'entry_date': entry_date,
+                    'entry_price': entry_price, 'holding_days': (date - entry_date).days
+                })
+                position = 0
+
+            # Update equity
+            current_equity = capital + position * price
+            equity_curve.append(current_equity)
+            if len(equity_curve) > 1:
+                daily_returns.append((equity_curve[-1] - equity_curve[-2]) / equity_curve[-2])
+
+        return {
+            **self._calculate_metrics(equity_curve, trades, daily_returns),
+            'strategy_name': strategy.name,
+            'signal_data': df
+        }
+
+    def _calculate_metrics(self, equity_curve, trades, daily_returns):
+        equity = pd.Series(equity_curve)
+        returns = pd.Series(daily_returns)
+
+        total_return = (equity.iloc[-1] / equity.iloc[0] - 1)
+        sharpe = (returns.mean() / returns.std() * np.sqrt(252)) if returns.std() != 0 else 0
+        downside = returns[returns < 0]
+        sortino = (returns.mean() / downside.std() * np.sqrt(252)) if len(downside) > 0 and downside.std() != 0 else 0
+        cummax = equity.expanding().max()
+        drawdown = (equity - cummax) / cummax
+        max_dd = drawdown.min()
+        calmar = total_return / abs(max_dd) if max_dd != 0 else 0
+
+        completed = [t for t in trades if 'pnl' in t]
+        wins = [t for t in completed if t['pnl'] > 0]
+        losses = [t for t in completed if t['pnl'] < 0]
+
+        win_rate = len(wins) / len(completed) if completed else 0
+        profit_factor = sum(t['pnl'] for t in wins) / abs(sum(t['pnl'] for t in losses)) if losses else 0
+        avg_win = np.mean([t['pnl'] for t in wins]) if wins else 0
+        avg_loss = abs(np.mean([t['pnl'] for t in losses])) if losses else 0
+        avg_holding = np.mean([t['holding_days'] for t in completed]) if completed else 0
+
+        return {
+            'initial_capital': equity.iloc[0],
+            'final_capital': equity.iloc[-1],
+            'total_return': total_return,
+            'sharpe_ratio': sharpe,
+            'sortino_ratio': sortino,
+            'calmar_ratio': calmar,
+            'max_drawdown': max_dd,
+            'win_rate': win_rate,
+            'profit_factor': profit_factor,
+            'total_trades': len(completed),
+            'avg_win': avg_win,
+            'avg_loss': avg_loss,
+            'avg_holding_days': avg_holding,
+            'equity_curve': equity_curve,
+            'trades': trades,
+            'daily_returns': daily_returns
+        }
+
+
+# ============================================================================
+# 6. Multi-Stock Comparator (All English + 9 Advanced Charts)
+# ============================================================================
+class MultiStockComparator:
+    def __init__(self):
+        self.colors = ['#2E86AB', '#A23B72', '#06A77D', '#F77F00', '#4ECDC4', '#D62828', '#8338EC', '#FB5607']
+        self.results_dict = {}
+
+    def add_stock_result(self, stock_id: str, results: Dict):
+        self.results_dict[stock_id] = results
+        print(f"Success: Added results for {stock_id}")
+
+    def run_multiple_backtests(self, stock_ids: List[str], start_date: str, end_date: str,
+                               strategy_class, strategy_params: Dict, initial_capital: float = 1_000_000):
+        print(f"\n{'='*80}")
+        print(f"Starting batch backtest for {len(stock_ids)} stocks")
+        print(f"{'='*80}\n")
+
+        fetcher = DataFetcher()
+        backtester = Backtester(initial_capital)
+
+        for i, sid in enumerate(stock_ids, 1):
+            print(f"[{i}/{len(stock_ids)}] Processing {sid}...")
+            data = fetcher.get_stock_data(sid, start_date, end_date)
+            if data.empty:
+                print(f"Warning: Skipping {sid} (no data)\n")
+                continue
+            strategy = strategy_class(**strategy_params)
+            results = backtester.run(strategy, data)
+            self.results_dict[sid] = results
+            print(f"Success: {sid} backtest completed\n")
+
+        print(f"Batch completed! Processed {len(self.results_dict)} stocks")
+
+    def generate_comparison_report(self):
+        if not self.results_dict:
+            print("Error: No results to display")
+            return None
+
+        data = []
+        for sid, r in self.results_dict.items():
+            data.append({
+                'Stock': sid,
+                'Total Return (%)': r['total_return'] * 100,
+                'Sharpe Ratio': r['sharpe_ratio'],
+                'Sortino Ratio': r['sortino_ratio'],
+                'Calmar Ratio': r['calmar_ratio'],
+                'Max Drawdown (%)': r['max_drawdown'] * 100,
+                'Win Rate (%)': r['win_rate'] * 100,
+                'Profit Factor': r['profit_factor'],
+                'Total Trades': r['total_trades'],
+                'Avg Holding Days': round(r['avg_holding_days'], 1),
+                'Final Capital': round(r['final_capital'])
+            })
+
+        df = pd.DataFrame(data).sort_values('Total Return (%)', ascending=False)
+        df['Rank'] = range(1, len(df) + 1)
+        cols = ['Rank', 'Stock', 'Total Return (%)', 'Sharpe Ratio', 'Sortino Ratio',
+                'Calmar Ratio', 'Max Drawdown (%)', 'Win Rate (%)', 'Profit Factor',
+                'Total Trades', 'Avg Holding Days', 'Final Capital']
+        print(df[cols].to_string(index=False, float_format="%.2f"))
+        return df
+
+    # === 9 Advanced Visualization Charts ===
+    def plot_equity_comparison(self):
+        fig, ax = plt.subplots(figsize=(16, 8))
+        for i, (sid, r) in enumerate(self.results_dict.items()):
+            eq = np.array(r['equity_curve'])
+            norm = (eq / eq[0] - 1) * 100
+            ax.plot(norm, label=sid, linewidth=2.5, color=self.colors[i % len(self.colors)])
+        ax.axhline(0, color='black', linestyle='--', alpha=0.7)
+        ax.set_title('Equity Curve Comparison (Normalized Return %)', fontsize=16, fontweight='bold')
+        ax.set_xlabel('Trading Days'); ax.set_ylabel('Return (%)')
+        ax.legend(); ax.grid(alpha=0.3)
+        plt.tight_layout(); plt.show()
+
+    def plot_metrics_comparison(self):
+        fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+        fig.suptitle('Key Performance Metrics Comparison', fontsize=18, fontweight='bold')
+        metrics = ['total_return', 'sharpe_ratio', 'max_drawdown', 'win_rate', 'profit_factor', 'total_trades']
+        titles = ['Total Return (%)', 'Sharpe Ratio', 'Max Drawdown (%)', 'Win Rate (%)', 'Profit Factor', 'Total Trades']
+        multipliers = [100, 1, 100, 100, 1, 1]
+        stocks = list(self.results_dict.keys())
+        x = np.arange(len(stocks))
+
+        for ax, metric, title, mul in zip(axes.flat, metrics, titles, multipliers):
+            values = [self.results_dict[s][metric] * mul for s in stocks]
+            ax.bar(x, values, color=self.colors[:len(stocks)], alpha=0.8, edgecolor='black')
+            ax.set_title(title, fontweight='bold')
+            ax.set_xticks(x); ax.set_xticklabels(stocks, rotation=45)
+            ax.grid(True, axis='y', alpha=0.3)
+        plt.tight_layout(); plt.show()
+
+    def plot_drawdown_analysis(self):
+        fig, ax = plt.subplots(figsize=(16, 8))
+        for i, (sid, r) in enumerate(self.results_dict.items()):
+            eq = pd.Series(r['equity_curve'])
+            dd = (eq / eq.cummax() - 1) * 100
+            ax.plot(dd, label=sid, linewidth=2, color=self.colors[i % len(self.colors)])
+            ax.fill_between(dd.index, dd, 0, alpha=0.1, color=self.colors[i % len(self.colors)])
+        ax.set_title('Drawdown Analysis', fontsize=16, fontweight='bold')
+        ax.set_ylabel('Drawdown (%)'); ax.legend(); ax.grid(alpha=0.3)
+        plt.tight_layout(); plt.show()
+
+    def plot_returns_distribution(self):
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+        for i, (sid, r) in enumerate(self.results_dict.items()):
+            rets = pd.Series(r['daily_returns']) * 100
+            ax1.hist(rets, bins=50, alpha=0.6, label=sid, color=self.colors[i % len(self.colors)])
+            ax2.boxplot(rets, positions=[i], patch_artist=True,
+                        boxprops=dict(facecolor=self.colors[i % len(self.colors)], alpha=0.6))
+        ax1.set_title('Daily Returns Distribution'); ax1.set_xlabel('Return (%)'); ax1.legend()
+        ax2.set_title('Returns Box Plot'); ax2.set_xticks(range(len(self.results_dict))); ax2.set_xticklabels(self.results_dict.keys())
+        plt.tight_layout(); plt.show()
+
+    def plot_risk_return_scatter(self):
+        fig, ax = plt.subplots(figsize=(12, 9))
+        rets, vols, sharpes, labels = [], [], [], []
+        for sid, r in self.results_dict.items():
+            ret = r['total_return'] * 100
+            vol = pd.Series(r['daily_returns']).std() * np.sqrt(252) * 100
+            rets.append(ret); vols.append(vol); sharpes.append(r['sharpe_ratio']); labels.append(sid)
+        scatter = ax.scatter(vols, rets, s=300, c=sharpes, cmap='RdYlGn', edgecolors='black', linewidth=2)
+        for i, txt in enumerate(labels):
+            ax.annotate(txt, (vols[i], rets[i]), fontsize=12, fontweight='bold', ha='center', va='center')
+        plt.colorbar(scatter, label='Sharpe Ratio')
+        ax.set_title('Risk-Return Scatter Plot', fontsize=16, fontweight='bold')
+        ax.set_xlabel('Annualized Volatility (%)'); ax.set_ylabel('Total Return (%)')
+        ax.grid(alpha=0.3); plt.tight_layout(); plt.show()
+
+    def plot_rolling_sharpe(self, window: int = 60):
+        fig, ax = plt.subplots(figsize=(16, 8))
+        for i, (sid, r) in enumerate(self.results_dict.items()):
+            rets = pd.Series(r['daily_returns'])
+            rolling = rets.rolling(window).mean() / rets.rolling(window).std() * np.sqrt(252)
+            ax.plot(rolling, label=sid, linewidth=2, color=self.colors[i % len(self.colors)])
+        ax.axhline(1, color='red', linestyle='--', alpha=0.7, label='Sharpe = 1.0')
+        ax.set_title(f'Rolling Sharpe Ratio ({window}-day window)', fontsize=16, fontweight='bold')
+        ax.set_ylabel('Rolling Sharpe'); ax.legend(); ax.grid(alpha=0.3)
+        plt.tight_layout(); plt.show()
+
+    def plot_monthly_returns_heatmap(self):
+        n = len(self.results_dict)
+        fig, axes = plt.subplots(n, 1, figsize=(14, 4*n))
+        if n == 1: axes = [axes]
+        for idx, (sid, r) in enumerate(self.results_dict.items()):
+            df = r['signal_data'].copy()
+            df['date'] = pd.to_datetime(df['date'])
+            df.set_index('date', inplace=True)
+            monthly = df['close'].resample('M').last().pct_change().fillna(0) * 100
+            years = monthly.index.year.unique()
+            matrix = monthly.values[-len(years)*12:].reshape(-1, 12)
+            sns.heatmap(matrix, annot=True, fmt='.1f', cmap='RdYlGn', center=0,
+                        ax=axes[idx], cbar_kws={'label': 'Return (%)'},
+                        xticklabels=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'],
+                        yticklabels=years)
+            axes[idx].set_title(f'{sid} - Monthly Returns Heatmap', fontweight='bold')
+        plt.tight_layout(); plt.show()
+
+    def plot_trade_analysis(self):
+        fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+        fig.suptitle('Trade Analysis Dashboard', fontsize=18, fontweight='bold')
+
+        # P&L Distribution
+        for i, (sid, r) in enumerate(self.results_dict.items()):
+            pnls = [t['pnl'] for t in r['trades'] if 'pnl' in t]
+            axes[0,0].hist(pnls, bins=30, alpha=0.6, label=sid, color=self.colors[i % len(self.colors)])
+        axes[0,0].set_title('P&L Distribution per Trade'); axes[0,0].axvline(0, color='red', linestyle='--')
+        axes[0,0].legend()
+
+        # Holding Days
+        for i, (sid, r) in enumerate(self.results_dict.items()):
+            days = [t['holding_days'] for t in r['trades'] if 'holding_days' in t]
+            axes[0,1].hist(days, bins=30, alpha=0.6, label=sid, color=self.colors[i % len(self.colors)])
+        axes[0,1].set_title('Holding Period Distribution'); axes[0,1].legend()
+
+        # Win/Loss Count
+        wins = [len([t for t in r['trades'] if t.get('pnl',0)>0]) for r in self.results_dict.values()]
+        losses = [len([t for t in r['trades'] if t.get('pnl',0)<0]) for r in self.results_dict.values()]
+        x = np.arange(len(self.results_dict))
+        axes[1,0].bar(x - 0.2, wins, 0.4, label='Wins', color='green', alpha=0.8)
+        axes[1,0].bar(x + 0.2, losses, 0.4, label='Losses', color='red', alpha=0.8)
+        axes[1,0].set_title('Win vs Loss Trade Count'); axes[1,0].set_xticks(x); axes[1,0].set_xticklabels(self.results_dict.keys())
+        axes[1,0].legend()
+
+        # Avg Win vs Avg Loss
+        avg_wins = [r['avg_win'] for r in self.results_dict.values()]
+        avg_losses = [abs(r['avg_loss']) for r in self.results_dict.values()]
+        axes[1,1].bar(x - 0.2, avg_wins, 0.4, label='Avg Win', color='green')
+        axes[1,1].bar(x + 0.2, avg_losses, 0.4, label='Avg Loss', color='red')
+        axes[1,1].set_title('Average Win vs Average Loss'); axes[1,1].set_xticks(x); axes[1,1].set_xticklabels(self.results_dict.keys())
+        axes[1,1].legend()
+
+        plt.tight_layout(); plt.show()
+
+    def plot_correlation_matrix(self):
+        if len(self.results_dict) < 2:
+            print("Warning: Need at least 2 stocks for correlation matrix")
+            return
+        min_len = min(len(r['daily_returns']) for r in self.results_dict.values())
+        rets = pd.DataFrame({sid: r['daily_returns'][:min_len] for sid, r in self.results_dict.items()})
+        corr = rets.corr()
+        plt.figure(figsize=(10, 8))
+        sns.heatmap(corr, annot=True, fmt='.2f', cmap='coolwarm', center=0, square=True)
+        plt.title('Daily Returns Correlation Matrix', fontsize=16, fontweight='bold')
+        plt.tight_layout(); plt.show()
+
+    def plot_comprehensive_dashboard(self):
+        print("\nGenerating 9 Advanced Analysis Charts...\n")
+        self.plot_equity_comparison()
+        self.plot_metrics_comparison()
+        self.plot_drawdown_analysis()
+        self.plot_returns_distribution()
+        self.plot_risk_return_scatter()
+        self.plot_rolling_sharpe()
+        self.plot_monthly_returns_heatmap()
+        self.plot_trade_analysis()
+        self.plot_correlation_matrix()
+        print("All charts generated successfully!")
+
+
+# ============================================================================
+# 7. Main Execution Example
+# ============================================================================
+def main():
+    print("="*80)
+    print(" " * 20 + "Enhanced Multi-Stock Backtesting System")
+    print("="*80)
+
+    stocks = ['2330', '2454', '2317', '2412', '3008']  # TSMC, MediaTek, Hon Hai, etc.
+    comparator = MultiStockComparator()
+
+    comparator.run_multiple_backtests(
+        stock_ids=stocks,
+        start_date='2023-01-01',
+        end_date='2024-12-31',
+        strategy_class=MovingAverageCrossStrategy,
+        strategy_params={'short_window': 5, 'long_window': 20},
+        initial_capital=1_000_000
+    )
+
+    print("\n" + "="*80)
+    print("Performance Comparison Report")
+    print("="*80)
+    df = comparator.generate_comparison_report()
+
+    comparator.plot_comprehensive_dashboard()
+
+    if df is not None:
+        df.to_csv('multi_stock_results.csv', index=False)
+        print(f"\nResults saved to multi_stock_results.csv")
+
+    print("\n" + "="*80)
+    print(" " * 30 + "Analysis Complete!")
+    print("="*80)
+
+
+if __name__ == "__main__":
+    main()
