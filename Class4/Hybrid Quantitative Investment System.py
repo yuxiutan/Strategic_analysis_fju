@@ -1,4 +1,4 @@
-# ========== Step 1: Install Packages ==========
+# Install Packages
 !pip install yfinance pandas numpy scipy scikit-learn ta xgboost lightgbm matplotlib seaborn reportlab -q
 import warnings
 warnings.filterwarnings('ignore')
@@ -90,7 +90,7 @@ class AdvancedDataProcessor:
         df['Price_ROC_5'] = close.pct_change(5)
         df['Price_ROC_10'] = close.pct_change(10)
        
-        # ========== ICT Concepts ==========
+        # ICT Concepts
         print("Calculating ICT indicators...")
        
         # 1. Fair Value Gaps (FVG) Detection
@@ -135,7 +135,7 @@ class AdvancedDataProcessor:
         print(f"Feature engineering complete! Total {len(df.columns)} columns")
         return self.data
    
-    # ========== ICT Detection Methods ==========
+    # ICT Detection Methods
     def _detect_bullish_fvg(self, df):
         """Detect Bullish Fair Value Gap (3-candle gap up)"""
         high = df['High'].squeeze()
@@ -313,7 +313,7 @@ class StockLSTM(nn.Module):
             dropout=dropout,
             batch_first=True
         )
-        self.fc = nn.Linear(hidden_size, 1)  #sigmoid
+        self.fc = nn.Linear(hidden_size, 1)  # sigmoid
         
     def forward(self, x):
         _, (hn, _) = self.lstm(x)
