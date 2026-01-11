@@ -1,8 +1,3 @@
-# ==========================================
-# 🚀 Advanced Quantitative Trading System - Google Colab Complete Edition
-# ==========================================
-# Copy directly to Colab and execute!
-
 # ========== Step 1: Install Packages ==========
 !pip install yfinance pandas numpy scipy scikit-learn ta xgboost lightgbm matplotlib seaborn reportlab -q
 import warnings
@@ -29,15 +24,12 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 from datetime import datetime
 import io
-print("✅ Packages imported successfully!")
-
-# ========== 新增 LSTM 相關 imports ==========
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
-from sklearn.preprocessing import MinMaxScaler  # LSTM 常用 MinMaxScaler
+from sklearn.preprocessing import MinMaxScaler
 
-# ========== Step 2: Data Processing Class ==========
+# Data Processing Class
 class AdvancedDataProcessor:
     def __init__(self, ticker, start_date, end_date):
         self.ticker = ticker
@@ -47,9 +39,9 @@ class AdvancedDataProcessor:
        
     def fetch_data(self):
         """Download stock data"""
-        print(f"📥 Downloading {self.ticker} data...")
+        print(f"Downloading {self.ticker} data...")
         self.data = yf.download(self.ticker, start=self.start_date, end=self.end_date, progress=False)
-        print(f"✅ Download complete! Total {len(self.data)} records")
+        print(f"Download complete! Total {len(self.data)} records")
         return self.data
    
     def add_advanced_features(self):
@@ -99,7 +91,7 @@ class AdvancedDataProcessor:
         df['Price_ROC_10'] = close.pct_change(10)
        
         # ========== ICT Concepts ==========
-        print("🎯 Calculating ICT indicators...")
+        print("Calculating ICT indicators...")
        
         # 1. Fair Value Gaps (FVG) Detection
         df['FVG_Bullish'] = self._detect_bullish_fvg(df)
@@ -133,18 +125,17 @@ class AdvancedDataProcessor:
         # 8. Breaker Blocks (Failed Order Blocks)
         df['Breaker_Block'] = self._detect_breaker_blocks(df)
        
-        print("✅ ICT indicators calculated!")
+        print("ICT indicators calculated!")
        
         # Target variable (5-day future return)
         df['Target_Return_5d'] = close.shift(-5) / close - 1
         df['Target_Direction'] = (df['Target_Return_5d'] > 0).astype(int)
        
         self.data = df.dropna()
-        print(f"✅ Feature engineering complete! Total {len(df.columns)} columns")
+        print(f"Feature engineering complete! Total {len(df.columns)} columns")
         return self.data
    
     # ========== ICT Detection Methods ==========
-   
     def _detect_bullish_fvg(self, df):
         """Detect Bullish Fair Value Gap (3-candle gap up)"""
         high = df['High'].squeeze()
@@ -311,7 +302,7 @@ class AdvancedDataProcessor:
         breaker = resistance_break - support_break
         return breaker
 
-# ========== LSTM 模型定義 ==========
+# LSTM Model
 class StockLSTM(nn.Module):
     def __init__(self, input_size, hidden_size=64, num_layers=2, dropout=0.2):
         super().__init__()
@@ -322,14 +313,14 @@ class StockLSTM(nn.Module):
             dropout=dropout,
             batch_first=True
         )
-        self.fc = nn.Linear(hidden_size, 1)  # 二元分類 → sigmoid
+        self.fc = nn.Linear(hidden_size, 1)  #sigmoid
         
     def forward(self, x):
         _, (hn, _) = self.lstm(x)
         out = self.fc(hn[-1])          # 取最後一層 hidden state
         return torch.sigmoid(out)      # 輸出 0~1 機率
 
-# ========== 序列資料集 ==========
+# 序列資料集
 class TimeSeriesDataset(Dataset):
     def __init__(self, X, y, seq_len=30):
         self.X = X
@@ -345,10 +336,10 @@ class TimeSeriesDataset(Dataset):
             torch.tensor(self.y[idx+self.seq_len],   dtype=torch.float32)
         )
 
-# ========== LSTM 訓練函數（簡化版） ==========
+# LSTM Training Function
 def train_lstm(X_scaled, y, seq_len=30, epochs=50, batch_size=64, device='cpu'):
     dataset = TimeSeriesDataset(X_scaled, y, seq_len)
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)  # 時序不打亂
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
     
     model = StockLSTM(
         input_size=X_scaled.shape[1],
@@ -379,7 +370,7 @@ def train_lstm(X_scaled, y, seq_len=30, epochs=50, batch_size=64, device='cpu'):
     
     return model
 
-# ========== LSTM 預測函數 ==========
+# LSTM Predict Function
 def predict_lstm(model, X_scaled, seq_len=30, device='cpu'):
     model.eval()
     probs = []
@@ -393,7 +384,7 @@ def predict_lstm(model, X_scaled, seq_len=30, device='cpu'):
     # 前 seq_len 筆因為沒有完整序列，補 0.5
     return np.array([0.5]*seq_len + probs)
 
-# ========== Step 3: Ensemble Learning Model ==========
+# Ensemble Learning Model
 class EnsemblePredictor:
     def __init__(self, feature_columns):
         self.feature_columns = feature_columns
@@ -401,7 +392,7 @@ class EnsemblePredictor:
         self.models = {}
         self.ensemble_weights = {}
         self.lstm_model = None
-        self.seq_len = 30  # LSTM 序列長度
+        self.seq_len = 30  # LSTM seq_len
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         print(f"使用裝置：{self.device}")
        
@@ -440,7 +431,7 @@ class EnsemblePredictor:
         return X_scaled, y
 
     def train_lstm_model(self, X_scaled, y):
-        print("開始訓練 LSTM...")
+        print("Start training LSTM...")
         self.lstm_model = train_lstm(
             X_scaled, y,
             seq_len=self.seq_len,
@@ -448,7 +439,7 @@ class EnsemblePredictor:
             batch_size=64,
             device=self.device
         )
-        print("LSTM 訓練完成！")
+        print("LSTM trained！")
 
     def predict_lstm_proba(self, X_scaled):
         if self.lstm_model is None:
@@ -457,7 +448,7 @@ class EnsemblePredictor:
    
     def train_ensemble(self, X, y):
         """Train ensemble model"""
-        print("🤖 Starting model training...")
+        print("Starting model training...")
         self.create_models()
         tscv = TimeSeriesSplit(n_splits=3)
        
@@ -475,7 +466,6 @@ class EnsemblePredictor:
             self.ensemble_weights[name] = avg_score
             print(f" {name.upper()}: Accuracy {avg_score:.2%}")
         
-        # 新增：訓練 LSTM
         self.train_lstm_model(X, y)
         
         # 取得 LSTM 在訓練集上的 oof 機率（近似）
@@ -488,8 +478,8 @@ class EnsemblePredictor:
         total = sum(self.ensemble_weights.values())
         self.ensemble_weights = {k: v/total for k, v in self.ensemble_weights.items()}
         print(f"LSTM CV-like Accuracy: {lstm_accuracy:.2%}")
-        print("所有模型權重：", self.ensemble_weights)
-        print("✅ Model training complete!")
+        print("All Model Eeight：", self.ensemble_weights)
+        print("Model training complete!")
         return self.models
    
     def predict_ensemble(self, X):
@@ -499,7 +489,7 @@ class EnsemblePredictor:
             pred_proba = model.predict_proba(X)[:, 1]
             predictions.append(pred_proba * self.ensemble_weights[name])
        
-        # 新增 LSTM 預測
+        # LSTM predict
         lstm_proba = self.predict_lstm_proba(X)
         predictions.append(lstm_proba * self.ensemble_weights.get('lstm', 0.0))
        
@@ -507,7 +497,7 @@ class EnsemblePredictor:
         ensemble_pred = (ensemble_proba > 0.5).astype(int)
         return ensemble_pred, ensemble_proba
 
-# ========== Step 4: Risk Management ==========
+# Risk Management
 class RiskManager:
     def __init__(self, initial_capital, max_risk_per_trade=0.02):
         self.initial_capital = initial_capital
@@ -537,7 +527,7 @@ class RiskManager:
         risk = abs(entry_price - stop_loss)
         return entry_price + (risk * 2.0)
 
-# ========== Step 5: Backtesting System ==========
+# Backtesting System
 class AdvancedBacktester:
     def __init__(self, initial_capital=100000):
         self.risk_manager = RiskManager(initial_capital)
@@ -547,7 +537,7 @@ class AdvancedBacktester:
        
     def run_backtest(self, data, predictions, probabilities, atr_values):
         """Execute backtest"""
-        print("📊 Running backtest...")
+        print("Running backtest...")
        
         for i in range(len(data)):
             date = data.index[i]
@@ -605,7 +595,7 @@ class AdvancedBacktester:
                             'shares': shares
                         })
        
-        print("✅ Backtest complete!")
+        print("Backtest complete!")
         return self.calculate_metrics()
    
     def calculate_metrics(self):
@@ -646,11 +636,11 @@ class AdvancedBacktester:
             'equity_curve': equity_df
         }
 
-# ========== Step 6: Visualization Functions ==========
+# Visualization Functions
 def plot_data_overview(data, ticker):
     """1. Data Overview"""
     print("\n" + "="*60)
-    print("📊 Step 1: Data Overview")
+    print("Step 1: Data Overview")
     print("="*60)
     fig, axes = plt.subplots(2, 2, figsize=(16, 10))
     fig.suptitle(f'{ticker} Data Overview & Basic Statistics', fontsize=16, fontweight='bold')
@@ -713,12 +703,12 @@ def plot_data_overview(data, ticker):
     axes[1, 1].set_title('Data Statistics Summary', fontweight='bold')
     plt.tight_layout()
     plt.show()
-    print("✅ Data overview complete!\n")
+    print("Data overview complete!\n")
 
 def plot_feature_importance(predictor, feature_cols):
     """2. Feature Importance Analysis"""
     print("="*60)
-    print("🧠 Step 2: Feature Importance Analysis")
+    print("Step 2: Feature Importance Analysis")
     print("="*60)
     # Get Random Forest feature importance
     rf_importances = predictor.models['rf'].feature_importances_
@@ -741,11 +731,11 @@ def plot_feature_importance(predictor, feature_cols):
                 ha='left', va='center', fontsize=9, color='black')
     plt.tight_layout()
     plt.show()
-    print("✅ Feature importance analysis complete!\n")
+    print("Feature importance analysis complete!\n")
 
 def plot_model_performance(predictor, X_train, y_train, X_test, y_test):
     print("="*60)
-    print("📈 Step 3: Model Training Results")
+    print("Step 3: Model Training Results")
     print("="*60)
     fig, axes = plt.subplots(2, 2, figsize=(16, 10))
     fig.suptitle('Model Training Results Analysis', fontsize=16, fontweight='bold')
@@ -773,20 +763,19 @@ def plot_model_performance(predictor, X_train, y_train, X_test, y_test):
     axes[0, 0].grid(True, alpha=0.3, axis='y')
     axes[0, 0].set_ylim([0.4, 1.0])
 
-    # 2. Ensemble weights （現在包含 LSTM）
+    # 2. Ensemble weights
     weights = list(predictor.ensemble_weights.values())
     all_model_names = list(predictor.ensemble_weights.keys())  # ['rf','xgb','lgbm','lstm']
     all_model_names = [name.upper() for name in all_model_names]  # 轉大寫
 
-    # 給四個顏色
-    colors = ['#10b981', '#2563eb', '#8b5cf6', '#f59e0b']  # 最後一個給 LSTM 用橙色
+    colors = ['#10b981', '#2563eb', '#8b5cf6', '#f59e0b']
 
     axes[0, 1].pie(weights, labels=all_model_names, autopct='%1.1f%%', 
                    startangle=90, colors=colors, textprops={'fontsize': 10})
     axes[0, 1].set_title('Ensemble Model Weight Distribution\n(including LSTM)', 
                          fontweight='bold')
 
-    # 3. Prediction probability distribution （保持不變）
+    # 3. Prediction probability distribution
     _, test_proba = predictor.predict_ensemble(X_test)
     axes[1, 0].hist(test_proba, bins=30, color='#8b5cf6', alpha=0.7, edgecolor='black')
     axes[1, 0].axvline(0.5, color='red', linestyle='--', linewidth=2, label='Decision Boundary')
@@ -796,7 +785,7 @@ def plot_model_performance(predictor, X_train, y_train, X_test, y_test):
     axes[1, 0].legend()
     axes[1, 0].grid(True, alpha=0.3)
 
-    # 4. Confusion matrix （保持不變）
+    # 4. Confusion matrix
     from sklearn.metrics import confusion_matrix
     test_pred, _ = predictor.predict_ensemble(X_test)
     cm = confusion_matrix(y_test, test_pred)
@@ -818,12 +807,12 @@ def plot_model_performance(predictor, X_train, y_train, X_test, y_test):
 
     plt.tight_layout()
     plt.show()
-    print("✅ Model training results analysis complete!\n")
+    print("Model training results analysis complete!\n")
 
 def plot_technical_analysis(data_test):
     """4. Technical Analysis Charts (with ICT)"""
     print("="*60)
-    print("📊 Step 4: Complete Technical Analysis Charts (ICT Enhanced)")
+    print("Step 4: Complete Technical Analysis Charts (ICT Enhanced)")
     print("="*60)
     fig = plt.figure(figsize=(20, 14))
     gs = fig.add_gridspec(5, 2, hspace=0.35, wspace=0.3)
@@ -940,15 +929,15 @@ def plot_technical_analysis(data_test):
     plt.suptitle('Complete Technical Analysis Dashboard (ICT Enhanced)', fontsize=16, fontweight='bold', y=0.996)
     plt.tight_layout()
     plt.show()
-    print("✅ Technical analysis charts complete!\n")
+    print("Technical analysis charts complete!\n")
 
 def plot_backtest_results(metrics, data_test, predictions, backtester):
     """5. Backtest Results Analysis - FIXED VERSION"""
     print("="*60)
-    print("💰 Step 5: Complete Backtest Results Analysis")
+    print("Step 5: Complete Backtest Results Analysis")
     print("="*60)
     fig = plt.figure(figsize=(18, 12))
-    gs = fig.add_gridspec(3, 2, hspace=0.4, wspace=0.3) # FIXED: Increased hspace from 0.3 to 0.4
+    gs = fig.add_gridspec(3, 2, hspace=0.4, wspace=0.3)
     equity_df = metrics['equity_curve']
     # 1. Equity curve and drawdown
     ax1 = fig.add_subplot(gs[0, :])
@@ -1065,9 +1054,9 @@ def plot_backtest_results(metrics, data_test, predictions, backtester):
     plt.suptitle('Complete Backtest Results Analysis', fontsize=14, fontweight='bold', y=0.99)
     plt.tight_layout(rect=[0, 0.01, 1, 0.98])
     plt.show()
-    print("✅ Backtest results analysis complete!\n")
+    print("Backtest results analysis complete!\n")
 
-# ========== Step 7: Future Prediction Class ==========
+# Future Prediction Class
 class FuturePredictor:
     def __init__(self, predictor, processor):
         self.predictor = predictor
@@ -1127,16 +1116,16 @@ class FuturePredictor:
             'Confidence': [latest_probability] * (n_days + 1)
         })
         # Display prediction summary
-        print(f"\n📊 Latest Market Data ({latest_date.strftime('%Y-%m-%d')}):")
+        print(f"\nLatest Market Data ({latest_date.strftime('%Y-%m-%d')}):")
         print(f" Current Price: ${latest_close:.2f}")
         print(f" ATR (Volatility): ${latest_atr:.2f}")
         print(f" RSI: {latest_rsi:.2f}")
         print(f" MACD: {latest_macd:.2f}")
-        print(f"\n🎯 Model Prediction:")
+        print(f"\nModel Prediction:")
         print(f" Direction: {'📈 BULLISH' if latest_probability > 0.5 else '📉 BEARISH'}")
         print(f" Confidence: {latest_probability:.1%}")
         print(f" Signal Strength: {'🟢 Strong' if abs(latest_probability - 0.5) > 0.15 else '🟡 Moderate' if abs(latest_probability - 0.5) > 0.08 else '🔴 Weak'}")
-        print(f"\n📅 Future Price Projections:")
+        print(f"\nFuture Price Projections:")
         print(f"{'='*60}")
         for i in range(1, len(results)):
             row = results.iloc[i]
@@ -1150,7 +1139,7 @@ class FuturePredictor:
         return results, latest_data
     def plot_future_prediction(self, historical_data, prediction_results, ticker):
         """Visualize future predictions - FIXED VERSION"""
-        print("📊 Generating prediction visualization...\n")
+        print("Generating prediction visualization...\n")
         fig, axes = plt.subplots(2, 2, figsize=(18, 10))
         # FIXED: Reduced fontsize and added more top margin
         fig.suptitle(f'{ticker} - Future Price Prediction Analysis', fontsize=14, fontweight='bold', y=0.98)
@@ -1264,9 +1253,9 @@ class FuturePredictor:
         # FIXED: Increased bottom margin and top margin
         plt.tight_layout(rect=[0, 0.02, 1, 0.96])
         plt.show()
-        print("✅ Prediction visualization complete!\n")
+        print("Prediction visualization complete!\n")
 
-# ========== Step 9: PDF Report Generator ==========
+# PDF Report Generator
 class PDFReportGenerator:
     def __init__(self, ticker, filename="Trading_Analysis_Report.pdf"):
         self.ticker = ticker
@@ -1346,7 +1335,7 @@ class PDFReportGenerator:
         self._add_disclaimer()
         # Build PDF
         doc.build(self.story)
-        print(f"✅ PDF Report generated: {self.filename}")
+        print(f"PDF Report generated: {self.filename}")
         print("="*60 + "\n")
     def _add_cover_page(self):
         """Add cover page"""
@@ -1667,10 +1656,10 @@ class PDFReportGenerator:
         """
         self.story.append(Paragraph(disclaimer_text, self.styles['Normal']))
 
-# ========== Step 10: Main Program ==========
+# Main Program
 def main():
     print("="*60)
-    print("🚀 Advanced Quantitative Trading System - ICT Enhanced Edition")
+    print("Advanced Quantitative Trading System - ICT Enhanced Edition")
     print("="*60)
     print("This system will demonstrate:")
     print("1️⃣ Data Overview")
@@ -1678,9 +1667,9 @@ def main():
     print("3️⃣ Model Training Results")
     print("4️⃣ Complete Technical Analysis (ICT Enhanced)")
     print("5️⃣ Backtest Results Analysis")
-    print("6️⃣ 🔮 FUTURE PRICE PREDICTION")
+    print("6️⃣ FUTURE PRICE PREDICTION")
     print("="*60)
-    print("🎯 ICT Concepts Included:")
+    print("ICT Concepts Included:")
     print(" • Order Blocks (Bullish & Bearish)")
     print(" • Fair Value Gaps (FVG)")
     print(" • Liquidity Sweeps (Stop Hunts)")
@@ -1697,12 +1686,12 @@ def main():
     INITIAL_CAPITAL = 100000
     PREDICT_DAYS = 5 # Number of days to predict into future
    
-    # ========== 1. Data Processing ==========
+    # Data Processing
     processor = AdvancedDataProcessor(TICKER, START_DATE, END_DATE)
     data = processor.fetch_data()
     data = processor.add_advanced_features()
    
-    # 📊 Visualization: Data Overview
+    # Visualization: Data Overview
     plot_data_overview(data, TICKER)
    
     # Select features (exclude raw prices and target variables)
@@ -1711,10 +1700,10 @@ def main():
                     'Asian_High', 'Asian_Low', 'London_High', 'London_Low'] # Exclude session data
     feature_cols = [col for col in data.columns if col not in exclude_cols]
    
-    print(f"📊 Using {len(feature_cols)} features for training")
+    print(f"Using {len(feature_cols)} features for training")
     print(f"Feature list: {', '.join([str(col) for col in feature_cols[:10]])}...")
    
-    # ========== 2. Model Training ==========
+    # Model Training
     predictor = EnsemblePredictor(feature_cols)
    
     # Use 80% for training, 20% for testing (historical backtest)
@@ -1727,23 +1716,23 @@ def main():
    
     predictor.train_ensemble(X_train, y_train)
    
-    # 📊 Visualization: Feature Importance
+    # Visualization: Feature Importance
     plot_feature_importance(predictor, feature_cols)
    
-    # 📊 Visualization: Model Training Results
+    # Visualization: Model Training Results
     plot_model_performance(predictor, X_train, y_train, X_test, y_test)
    
-    # ========== 3. Historical Backtest ==========
+    # Historical Backtest
     test_pred, test_proba = predictor.predict_ensemble(X_test)
     atr_values = test_data['ATR'].values
    
-    # 📊 Visualization: Technical Analysis Charts
+    # Visualization: Technical Analysis Charts
     plot_technical_analysis(test_data)
    
     backtester = AdvancedBacktester(initial_capital=INITIAL_CAPITAL)
     metrics = backtester.run_backtest(test_data, test_pred, test_proba, atr_values)
    
-    # ========== 4. Display Backtest Results ==========
+    # Display Backtest Results
     print("\n" + "="*60)
     print("📈 Historical Backtest Results Summary Summary")
     print("="*60)
@@ -1756,19 +1745,19 @@ def main():
     print(f"Avg Loss: ${metrics['avg_loss']:>10.2f}")
     print("="*60 + "\n")
    
-    # 📊 Visualization: Complete Backtest Results Analysis
+    # Visualization: Complete Backtest Results Analysis
     plot_backtest_results(metrics, test_data, test_pred, backtester)
    
-    # ========== 5. FUTURE PREDICTION ==========
+    # FUTURE PREDICTION
     print("\n" + "="*60)
-    print("🔮 NOW PREDICTING FUTURE PRICES...")
+    print("NOW PREDICTING FUTURE PRICES...")
     print("="*60)
    
     # Retrain model on ALL available data for best future predictions
-    print("\n📚 Retraining model on complete dataset for future prediction...")
+    print("\nRetraining model on complete dataset for future prediction...")
     X_all, y_all = predictor.prepare_data(data)
     predictor.train_ensemble(X_all, y_all)
-    print("✅ Model retrained on complete dataset!\n")
+    print("Model retrained on complete dataset!\n")
    
     # Create future predictor
     future_predictor = FuturePredictor(predictor, processor)
@@ -1779,19 +1768,19 @@ def main():
     # Visualize predictions
     future_predictor.plot_future_prediction(data, prediction_results, TICKER)
    
-    # ========== 6. Final Summary ==========
+    # Final Summary
     print("\n" + "="*60)
-    print("✅ All analysis complete!")
+    print("All analysis complete!")
     print("="*60)
-    print("\n📊 Summary:")
+    print("\nSummary:")
     print(f" Historical Performance: {metrics['total_return']:>10.2%} return")
     print(f" Model Confidence: {prediction_results['Confidence'].iloc[-1]:>10.1%}")
     print(f" Future Outlook: {'📈 BULLISH' if prediction_results['Confidence'].iloc[-1] > 0.5 else '📉 BEARISH'}")
     print(f" Expected {PREDICT_DAYS}-Day Change: {((prediction_results['Predicted_Price'].iloc[-1] / prediction_results['Predicted_Price'].iloc[0]) - 1):>9.2%}")
    
-    # ========== 7. Generate PDF Report ==========
+    # Generate PDF Report
     print("\n" + "="*60)
-    print("📄 GENERATING COMPREHENSIVE PDF REPORT")
+    print("GENERATING COMPREHENSIVE PDF REPORT")
     print("="*60)
    
     pdf_filename = f"{TICKER}_Trading_Analysis_Report_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf"
@@ -1799,7 +1788,7 @@ def main():
     pdf_generator.generate_report(metrics, prediction_results, data, predictor)
    
     print("\n" + "="*60)
-    print("📌 Suggested next steps:")
+    print("Suggested next steps:")
     print("1. Review the generated PDF report for detailed analysis")
     print("2. Adjust PREDICT_DAYS to forecast further into future")
     print("3. Try different tickers (e.g., 'TSLA', 'MSFT', '2330.TW')")
@@ -1808,13 +1797,13 @@ def main():
     print("6. Implement live trading alerts based on predictions")
     print("="*60)
    
-    print(f"\n💾 Files Generated:")
+    print(f"\nFiles Generated:")
     print(f" • PDF Report: {pdf_filename}")
     print(f" • Download this file from Colab's Files panel (left sidebar)")
    
     return metrics, backtester, predictor, prediction_results, pdf_filename
 
-# ========== Execute Main Program ==========
+# Execute Main Program
 if __name__ == "__main__":
     metrics, backtester, predictor, predictions, pdf_file = main()
    
